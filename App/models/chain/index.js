@@ -1,5 +1,5 @@
 const Block = require('../block');
-const { getHash } = require('../../services/hash/util');
+const { getHash } = require('../../services/hash');
 const { proofOfWork } = require('../../p2p-network/components/proof-of-work');
 
 const ZERO = '0';

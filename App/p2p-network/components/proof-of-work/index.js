@@ -1,4 +1,4 @@
-const { getHash } = require('../../../services/hash/util');
+const { getHash } = require('../../../services/hash');
 
 /**
  * Get proof of work for a given hash (data) and network difficulty (nZeros)
