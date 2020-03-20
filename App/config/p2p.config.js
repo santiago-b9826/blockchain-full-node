@@ -14,6 +14,30 @@ const getPort = require('get-port');
 const Swarm = require('discovery-swarm');
 const defaults = require('dat-swarm-defaults');
 
+const mongoose = require('mongoose');
+const cron = require('node-cron');
+
+const TransactionClass = require('../models/transaction');
+const Chain = require('../models/chain');
+const { Transaction, User, Block } = require('../db/models');
+const env = require('./environment.config');
+
+const {
+    TRANSACTIONS_PER_BLOCK,
+    USER,
+    TRANSACTION,
+    BLOCK,
+    DB_URI,
+    MINE_PUBLIC_KEY,
+    MINE_PRIVATE_KEY,
+    MY_PUBLIC_KEY,
+    MY_PRIVATE_KEY } = env;
+
+let allTransactions = [];
+let transactionsToBroadcast = [];
+let errorTransactions = [];
+let mininFlag = false;
+
 /**
  * Here we will save our TCP peer connections
  * using the peer id as key: { peer_id: TCP_Connection }
@@ -60,7 +84,25 @@ const startP2P = async (channelName) => {
         const peerId = info.id.toString('hex');
 
         conn.on('data', data => {
-            console.log(JSON.parse(data));
+            data = JSON.parse(data);
+            switch (data.type) {
+                case USER:
+                    break;
+                case TRANSACTION:
+                    addP2PTransactions(data.transactions);
+                    break;
+                case BLOCK:
+                    try {
+                        throw new Error('Stop Everything!!, Another node has found the block');
+                    } catch (e) {
+                        const { _, chain } = new Chain();
+                        chain.addSharedBlock(data.block);
+                        console.log(e.message);
+                    }
+                    break;
+                default:
+                    break;
+            }
         });
 
         /**
@@ -95,7 +137,107 @@ const broadcast = (data) => {
     }
 };
 
+const countPeers = () => {
+    let counter = 0;
+    for (let id in peers) {
+        counter++;
+    }
+    return counter;
+}
+
+const addTransaction = (transaction) => {
+    const { to, from, amount, message, fee } = transaction;
+    const newTransaction = new TransactionClass(to, from, amount, message, fee);
+    const isValid = validateTransaction(newTransaction);
+    if (isValid) {
+        allTransactions.push(newTransaction);
+        transactionsToBroadcast.push(newTransaction);
+    } else {
+        errorTransactions.push(newTransaction)
+    }
+}
+
+const addApiTransactions = (transactions) => {
+    transactionsToBroadcast = [];
+    errorTransactions = [];
+    transactions.forEach(transaction => {
+        addTransaction(transaction);
+    });
+    broadcast({ type: TRANSACTION, transactions: transactionsToBroadcast });
+    if (allTransactions.length >= TRANSACTIONS_PER_BLOCK) {
+        miningBlock(allTransactions, countPeers() + 2);
+    }
+    return errorTransactions;
+}
+
+const addP2PTransactions = (transactions) => {
+    transactions.forEach(transaction => {
+        const { to, from, amount, message, fee } = transaction;
+        const newTransaction = new TransactionClass(to, from, amount, message, fee);
+        allTransactions.push(newTransaction);
+    });
+}
+
+const validateTransaction = (transaction) => {
+    return true;
+}
+
+cron.schedule('*/1 * * * *', () => {
+    if (mininFlag) {
+        miningBlock(allTransactions, countPeers + 2);
+    } else {
+        mininFlag = true;
+    }
+});
+
+const miningBlock = async (transactions) => {
+    const dbTransactions = [];
+    const { _, chain } = new Chain();
+    const ownTransaction = new TransactionClass(MY_PUBLIC_KEY, MINE_PUBLIC_KEY, 5, 'Mining block', 0);
+    transactions.unshift(ownTransaction);
+    mininFlag = false;
+    mongoose.connect(DB_URI, { useNewUrlParser: true });
+
+    await chain.addBlock(transactions);
+
+    const lastBlock = chain.lastBlock();
+    const { header, body } = lastBlock
+    const dbBlock = new Block({ header, body });
+    await dbBlock.save();
+
+    for (let index = 0; index < transactions.length; index++) {
+        let transaction = transactions[index];
+        const { to, from, amount, message, fee } = transaction;
+        await User.updateOne(
+            {
+                publicKey: from,
+            },
+            {
+                $inc: { balance: -amount }
+            }
+        );
+        await User.updateOne(
+            {
+                publicKey: to,
+            },
+            {
+                $inc: { balance: amount }
+            }
+        );
+        dbTransactions.push(new Transaction({ to, from, amount, message, fee }));
+    }
+
+    await Transaction.create(dbTransactions);
+    broadcast({ type: BLOCK, block: lastBlock });
+    allTransactions = [];
+    return lastBlock;
+}
+
 module.exports = {
     startP2P,
-    broadcast
+    broadcast,
+    allTransactions,
+    addApiTransactions,
+    addP2PTransactions,
+    miningBlock
 }

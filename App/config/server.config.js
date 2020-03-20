@@ -12,7 +12,7 @@ const serverConfig = (app) => {
     app.use(bodyParser.json());
     app.use(bodyParser.urlencoded({ extended: true }));
     app.use(morgan(MORGAN_MODE));
-    // app.use('/', routes);
+    app.use('/', routes);
 
     app.use((req, res, next) => {
         res.header('Access-Control-Allow-Origin', '*');
